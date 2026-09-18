@@ -1,0 +1,416 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MS-DOS Chat Platform</title>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=VT323&display=swap');
+
+        * {
+            box-sizing: border-box;
+        }
+
+        body, html {
+            margin: 0;
+            padding: 0;
+            width: 100%;
+            height: 100%;
+            background-color: #000000;
+            color: #ffffff;
+            font-family: 'VT323', monospace;
+            font-size: 21px;
+            line-height: 1.2;
+            overflow: hidden;
+        }
+
+        #terminal-container {
+            width: 100%;
+            height: 100%;
+            padding: 15px;
+            display: flex;
+            flex-direction: column;
+            justify-content: flex-end;
+        }
+
+        #output-buffer {
+            flex-grow: 1;
+            overflow-y: auto;
+            white-space: pre-wrap;
+            word-wrap: break-word;
+            margin-bottom: 10px;
+            padding-right: 5px;
+        }
+
+        #output-buffer::-webkit-scrollbar {
+            width: 8px;
+        }
+        #output-buffer::-webkit-scrollbar-track {
+            background: #000000;
+        }
+        #output-buffer::-webkit-scrollbar-thumb {
+            background: #ffffff;
+        }
+
+        #input-line {
+            display: flex;
+            align-items: center;
+            width: 100%;
+            white-space: pre-wrap;
+        }
+
+        #prompt-path {
+            color: #ffffff;
+            margin-right: 8px;
+            flex-shrink: 0;
+        }
+
+        #text-display {
+            color: #ffffff;
+            word-break: break-all;
+        }
+
+        .cursor {
+            display: inline-block;
+            background-color: #ffffff;
+            color: #000000;
+            width: 10px;
+            animation: blink 0.8s infinite;
+            margin-left: 2px;
+        }
+
+        #hidden-input {
+            position: absolute;
+            left: -9999px;
+            opacity: 0;
+        }
+
+        @keyframes blink {
+            0%, 49% { opacity: 1; }
+            50%, 100% { opacity: 0; }
+        }
+
+        .system-msg {
+            color: #aaaaaa;
+        }
+        
+        .alert-msg {
+            color: #ffffff;
+            font-weight: bold;
+        }
+
+        /* Continuous text line that scales dynamically using window boundaries without wrapping */
+        .wall-of-equals {
+            width: 100%;
+            overflow: hidden;
+            white-space: nowrap;
+            color: #ffffff;
+            margin: 8px 0;
+            display: block;
+            flex-shrink: 0;
+        }
+    </style>
+</head>
+<body>
+
+<div id="terminal-container">
+    <div id="output-buffer"></div>
+    <div id="input-line">
+        <span id="prompt-path">C:\CHAT></span>
+        <span id="text-display"></span><span class="cursor">&nbsp;</span>
+    </div>
+</div>
+
+<input type="text" id="hidden-input" autofocus autocomplete="off" spellcheck="false">
+
+<script>
+    const outputBuffer = document.getElementById('output-buffer');
+    const textDisplay = document.getElementById('text-display');
+    const hiddenInput = document.getElementById('hidden-input');
+    const promptPath = document.getElementById('prompt-path');
+
+    // State Variables
+    let currentUser = localStorage.getItem('dos_chat_username') || null;
+    let currentTab = localStorage.getItem('dos_chat_current_tab') || null;
+    let lastSender = null; // Track consecutive authors for speaker border separators
+
+    // Setup an initial default tab registry array inside storage matrix if none exists
+    if (!localStorage.getItem('dos_chat_tabs_registry')) {
+        localStorage.setItem('dos_chat_tabs_registry', JSON.stringify(['DEFAULT']));
+    }
+
+    // Direct Boot Up Implementation
+    initSessionInfo();
+
+    function initSessionInfo() {
+        outputBuffer.innerHTML = '';
+        
+        if (currentUser) {
+            printToLog("[PROFILE RESTORED]: Logged in as computer profile \"" + currentUser + "\".");
+        } else {
+            printToLog("To sign in or create a computer profile, type:");
+            printToLog("  /signin [name]   OR   /signup [name]");
+        }
+        printToLog("Type /help to display all terminal subsystem commands.");
+        printToLog("");
+        updatePrompt();
+
+        if (currentTab) {
+            renderTabLogs();
+        } else {
+            printToLog("[SYSTEM]: Not currently connected to any tab channel.");
+            printToLog("          You cannot chat until you join or create an active tab.");
+            printToLog("          Type /tab to view active tabs or /createtab [name] to start a new one.");
+            printToLog("");
+        }
+    }
+
+    function printToLog(text, className = '') {
+        const div = document.createElement('div');
+        if (className) div.className = className;
+        div.textContent = text;
+        outputBuffer.appendChild(div);
+        outputBuffer.scrollTop = outputBuffer.scrollHeight;
+    }
+
+    function printWallOfEquals() {
+        const div = document.createElement('div');
+        div.className = 'wall-of-equals';
+        div.textContent = "=".repeat(500);
+        outputBuffer.appendChild(div);
+        outputBuffer.scrollTop = outputBuffer.scrollHeight;
+    }
+
+    function updatePrompt() {
+        const displayTab = currentTab ? currentTab.substring(0, 8).toUpperCase() : "NO_TAB";
+        if (currentUser) {
+            promptPath.textContent = "[" + displayTab + "] C:\\CHAT\\" + currentUser.toUpperCase() + ">";
+        } else {
+            promptPath.textContent = "[" + displayTab + "] C:\\CHAT\\GUEST>";
+        }
+    }
+
+    document.addEventListener('click', () => {
+        hiddenInput.focus();
+    });
+
+    hiddenInput.addEventListener('input', (e) => {
+        textDisplay.textContent = e.target.value;
+    });
+
+    hiddenInput.addEventListener('keydown', (e) => {
+        if (e.key === 'Tab') {
+            e.preventDefault();
+        }
+        if (e.key === 'Enter') {
+            const commandLine = hiddenInput.value.trim();
+            textDisplay.textContent = '';
+            hiddenInput.value = '';
+            
+            if (commandLine) {
+                processCommand(commandLine);
+            }
+        }
+    });
+
+    function getTabsRegistry() {
+        const tabs = localStorage.getItem('dos_chat_tabs_registry');
+        return tabs ? JSON.parse(tabs) : ['DEFAULT'];
+    }
+
+    function saveTabsRegistry(tabsArr) {
+        localStorage.setItem('dos_chat_tabs_registry', JSON.stringify(tabsArr));
+    }
+
+    function processCommand(rawInput) {
+        printToLog(promptPath.textContent + rawInput);
+
+        const parts = rawInput.split(' ');
+        const command = parts[0].toLowerCase();
+        const argument = parts.slice(1).join(' ').trim();
+
+        if (command === '/signin' || command === '/signup') {
+            if (!argument) {
+                printToLog("ERROR: Parameter missing. Syntax: /signin [username]", "alert-msg");
+                return;
+            }
+            currentUser = argument;
+            localStorage.setItem('dos_chat_username', currentUser);
+            printToLog("SUCCESS: Terminal identity assigned to machine: \"" + currentUser + "\"");
+            updatePrompt();
+            return;
+        }
+
+        if (command === '/clear' || command === '/cls') {
+            outputBuffer.innerHTML = '';
+            lastSender = null;
+            return;
+        }
+
+        if (command === '/help') {
+            printToLog("------------------- DOS TERMINAL CHAT COMMAND REGISTER --------------------");
+            printToLog("/signin [name]       - Authenticate/Register your computer profile name.");
+            printToLog("/signup [name]       - Equivalent registration protocol for profile name.");
+            printToLog("/tab [tab_name]      - Join an existing chat tab area room.");
+            printToLog("/tab                 - List all current tabs registered on memory.");
+            printToLog("/createtab [name]    - Create a completely new chat tab area for people.");
+            printToLog("/status              - Diagnostic output of system variables.");
+            printToLog("/clear               - Clear screen logs buffer.");
+            printToLog("---------------------------------------------------------------------------");
+            return;
+        }
+
+        if (command === '/status') {
+            printToLog("--- DIAGNOSTIC SYSTEM PARAMETERS ---");
+            printToLog("USER PROFILE : " + (currentUser ? currentUser : "[SIGNIN REQUIRED]"));
+            printToLog("ACTIVE TAB   : " + (currentTab ? currentTab : "[NONE - CHAT REJECTED]"));
+            printToLog("------------------------------------");
+            return;
+        }
+
+        // Tab Joining Router Engine
+        if (command === '/tab') {
+            const registry = getTabsRegistry();
+            if (!argument) {
+                printToLog("--- AVAILABLE CHAT TABS REGISTERED ---");
+                registry.forEach(tab => {
+                    printToLog(" - /tab " + tab + " " + (tab === currentTab ? '[CURRENT]' : ''));
+                });
+                printToLog("Use /createtab [name] to launch a separate tab segment.");
+                printToLog("-------------------------------------------------------");
+                return;
+            }
+            
+            const targetTab = argument.toUpperCase();
+            if (registry.indexOf(targetTab) === -1) {
+                printToLog("tab not found", "alert-msg");
+                return;
+            }
+            
+            currentTab = targetTab;
+            localStorage.setItem('dos_chat_current_tab', currentTab);
+            printToLog("SUCCESS: Connected to tab sector: [" + currentTab + "]");
+            updatePrompt();
+            renderTabLogs();
+            return;
+        }
+
+        // Tab Instantiation Engine
+        if (command === '/createtab') {
+            if (!argument) {
+                printToLog("ERROR: Parameter missing. Syntax: /createtab [tabname]", "alert-msg");
+                return;
+            }
+            const targetTab = argument.toUpperCase();
+            const registry = getTabsRegistry();
+            
+            if (registry.indexOf(targetTab) === -1) {
+                registry.push(targetTab);
+                saveTabsRegistry(registry);
+            }
+            
+            currentTab = targetTab;
+            localStorage.setItem('dos_chat_current_tab', currentTab);
+            printToLog("SUCCESS: Created and connected to tab: [" + currentTab + "]");
+            updatePrompt();
+            renderTabLogs();
+            return;
+        }
+
+        if (rawInput.startsWith('/')) {
+            printToLog("ERROR: Bad command or file name: \"" + command + "\"", "alert-msg");
+            return;
+        }
+
+        if (!currentUser) {
+            printToLog("ERROR: Access Denied. Profile not configured yet.", "alert-msg");
+            printToLog("Run registration command: /signin [your_name]", "system-msg");
+            return;
+        }
+
+        // Block chat stream broadcasts if they haven't explicitly set a target tab destination
+        if (!currentTab) {
+            printToLog("ERROR: You cannot chat if you are not inside a tab.", "alert-msg");
+            printToLog("Please type /tab [name] or create a new tab via /createtab [name].", "system-msg");
+            return;
+        }
+
+        const messagePayload = {
+            id: 'msg_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9),
+            sender: currentUser,
+            text: rawInput,
+            tab: currentTab,
+            timestamp: new Date().toLocaleTimeString()
+        };
+
+        const history = getHistory();
+        history.push(messagePayload);
+        saveHistory(history);
+
+        renderSingleMessage(messagePayload);
+    }
+
+    function getHistory() {
+        const records = localStorage.getItem('dos_chat_data_stream');
+        return records ? JSON.parse(records) : [];
+    }
+
+    function saveHistory(historyArr) {
+        localStorage.setItem('dos_chat_data_stream', JSON.stringify(historyArr));
+    }
+
+    function renderSingleMessage(msg) {
+        if (msg.tab !== currentTab) {
+            return;
+        }
+        
+        if (lastSender !== null && lastSender !== msg.sender) {
+            printWallOfEquals();
+        }
+        
+        printToLog("[" + msg.timestamp + "] <" + msg.sender + "> " + msg.text);
+        lastSender = msg.sender;
+    }
+
+    function renderTabLogs() {
+        outputBuffer.innerHTML = ''; 
+        lastSender = null; 
+        
+        const history = getHistory();
+        let recordsCount = 0;
+        
+        history.forEach(msg => {
+            if (msg.tab === currentTab) {
+                if (lastSender !== null && lastSender !== msg.sender) {
+                    printWallOfEquals();
+                }
+                printToLog("[" + msg.timestamp + "] <" + msg.sender + "> " + msg.text);
+                lastSender = msg.sender;
+                recordsCount++;
+            }
+        });
+        
+        if (recordsCount === 0) {
+            printToLog("[SYSTEM] Tab area [" + currentTab + "] is empty. Ready for chat.");
+        }
+    }
+
+    window.addEventListener('storage', (e) => {
+        if (e.key === 'dos_chat_data_stream') {
+            const oldHistory = e.oldValue ? JSON.parse(e.oldValue) : [];
+            const newHistory = e.newValue ? JSON.parse(e.newValue) : [];
+            
+            if (newHistory.length > oldHistory.length) {
+                const incomingMessage = newHistory[newHistory.length - 1];
+                renderSingleMessage(incomingMessage);
+            }
+        }
+    });
+</script>
+
+</body>
+</html>
+
+
+
+
